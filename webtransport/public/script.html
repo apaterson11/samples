@@ -1,0 +1,194 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>octorus</title>
+  <meta name="description" content="octorus">
+  <style>
+      canvas, video {
+          margin: 20px;
+      }
+  </style>
+</head>
+
+<body>
+  <pre id="stats"></pre>
+  <div id="remotes">
+    <video id="local"></video>
+  </div>
+  <pre id="logs"></pre>
+
+  <script>
+    const WIDTH = 160;
+    const HEIGHT = 120;
+    let sentCount = 0;
+    let recvCount = 0;
+    let sentFramesCount = 0;
+    let recvFramesCount = 0;
+    const FRAMESIZE = WIDTH * HEIGHT * 4;
+    const HEADERSIZE = 16;
+    const connections = {};
+    let t1 = 0;
+    let t2 = 0;
+    let counter = 0;
+
+    console.log("script started");
+
+    const videoGrid = document.getElementById('local')
+    // const video = document.querySelector('#local')
+
+    {/* shows stats, unnecessary but could be useful for metric analysis */}
+    const showStats = () => {
+        document.querySelector('#stats').innerHTML = `QUIC Datagrams sent:${sentCount}\nQUIC Datagrams recv:${recvCount}\nFrames sent:${sentFramesCount}\nFrames recv:${recvFramesCount}\n`;
+        if (recvCount == 10000) {
+            t2 = performance.now();
+            console.log(`Receiving 1000 datagrams took ${t2 - t1} milliseconds.`);
+        }
+    };
+
+    // start webtransport instance
+    const transport = new WebTransport('https://web-platform.test:58248')
+
+    //account for crashes and exits
+    transport.closed.then(() => {
+        console.log('CLOSED. The connection is closed gracefully.');
+    }).catch((error) => {
+        console.error('CLOSED. The connection is closed abruptly.', error);
+    });
+
+    transport.ready.then(() => {
+        console.info('READY');
+        const datagramWriter = transport.datagrams.writable.getWriter(); 
+        const datagramReader = transport.datagrams.readable.getReader();
+
+        const read = async () => {
+            // console.log("ATTEMPTING TO READ");
+            datagramReader.read().then(({value, done}) => {
+                counter = counter + 1;
+                if (t1 == 0) {
+                    t1 = performance.now();
+                }
+                // console.log("RECEIVED ", value.length);
+
+                const dataSize = value.length - HEADERSIZE;
+                let dv = new DataView(value.buffer);  
+                const streamId = dv.getUint32(0);
+                const eof = dv.getUint32(12);
+
+                if (!connections[streamId]) {
+                    document.querySelector('#logs').innerHTML += `User ${streamId} connected\n`;    // if user's ID is not already present, show as connected
+                    connections[streamId] = createRemoteView(streamId);                                   // create video feed
+                    videoGrid.appendChild(connections[streamId].canvas);         
+                }
+                const { context, buffer, bufferOffset } = connections[streamId];
+
+                // if (counter == 1) {
+                //     console.log(bufferOffset, connections[streamId].bufferOffset, eof);     // eof and bufferOffset do not line up?
+                // }
+
+
+                // console.log(bufferOffset);
+                // console.log(dataSize);
+                // let x = bufferOffset + dataSize
+                // console.log(bufferOffset + " + " +  dataSize + " = " + x);
+                // console.log(FRAMESIZE);
+                // console.log("-----------");
+                    
+                if (bufferOffset + dataSize < FRAMESIZE) {          // accounts for when data size is too big
+                    buffer.set(value.slice(HEADERSIZE), bufferOffset);
+                    connections[streamId].bufferOffset += dataSize;
+                }
+                // else{
+                //     render(connections[streamId]);
+                //     connections[streamId].bufferOffset = 0;
+                // }
+
+                if (eof == 1) {  // if end of video?
+                    render(connections[streamId]);
+                    connections[streamId].bufferOffset = 0;
+                }
+
+                console.log(bufferOffset, dataSize, eof);     // eof and bufferOffset do not line up?
+
+                
+
+                recvCount ++;
+                showStats();
+                read();
+            });
+        };
+        read();
+        startMedia(datagramWriter)
+    });
+
+    {/* this seems to be the video feed canvas */}
+    const createRemoteView = (id) => {
+        const canvas = document.createElement('canvas');
+        canvas.setAttribute("id", `remote_${id}`);
+        canvas.width = WIDTH;
+        canvas.height = HEIGHT;
+        const context = canvas.getContext('2d');
+        const buffer = new Uint8ClampedArray(FRAMESIZE);
+        const bufferOffset = 0;
+        return { canvas, context, buffer, bufferOffset };
+    };
+
+    {/* renders received media data */}
+    const render = (view) => {
+        recvFramesCount ++;
+        // console.log("RENDER FRAME");
+        view.context.putImageData(new ImageData(view.buffer, WIDTH, HEIGHT), 0, 0);
+    };
+
+    {/*  sends video data from camera */}
+    const startMedia = async (datagramWriter) => {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: {width: {exact: WIDTH}, height: {exact: HEIGHT}, frameRate: {max:30}}, audio: true });
+        const video = document.querySelector('#local'); // how does this work? is this the video id defined at the start? yes probably
+        video.srcObject = stream;
+        video.muted = true;
+        video.play();   // unsure what this does
+
+        let streamId = Math.floor(Math.random() * 4294967295);  // should use uuid instead
+        let sequenceNumber = 0;
+        let ts = Date.now();
+
+        const canvasContext = document.createElement("canvas").getContext("2d");
+        setInterval(async () => {
+            canvasContext.drawImage(video, 0, 0);
+            const imgData = canvasContext.getImageData(0, 0, WIDTH, HEIGHT);
+
+            ts = Date.now();
+            sentFramesCount++;
+            showStats();
+            let offset = 0;
+
+            // sends datagrams
+            while (true) {
+                let size = 1100;
+                if (offset + size > imgData.data.length) {
+                    size = imgData.data.length - offset;
+                }
+                //console.log("SENDING", size);   // make sure this matches below
+                await datagramWriter.ready;
+                const chunk = imgData.data.slice(offset, offset + size);
+        
+                let writeBuffer = new Uint8ClampedArray(HEADERSIZE + chunk.length);
+                const dv = new DataView(writeBuffer.buffer, 0); // is dataview too slow?
+                writeBuffer.set(chunk, HEADERSIZE);
+                dv.setUint32(0, streamId);
+                dv.setUint32(4, sequenceNumber++);  // can we get rid of these?
+                dv.setUint32(8, ts);
+                dv.setUint32(12, offset + size >= imgData.data.length ? 1 : 0); // does the third parameter count as undefined? are we sending as big or little endian?
+        
+                await datagramWriter.write(dv); // find out if all data is being written
+                sentCount++;
+                showStats();
+                offset += size;
+                
+                if (offset >= imgData.data.length) { 
+                    break;
+                }
+            }
+        }, 5000);
+    };

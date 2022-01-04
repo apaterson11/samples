@@ -90,7 +90,8 @@ from aioquic.quic.events import ProtocolNegotiated, StreamReset, QuicEvent
 BIND_ADDRESS = '::1'
 BIND_PORT = 4433
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
+connections = []
 
 # https://datatracker.ietf.org/doc/html/draft-ietf-masque-h3-datagram-05#section-9.1
 H3_DATAGRAM_05 = 0xffd277
@@ -130,11 +131,13 @@ class CounterHandler:
         self._session_id = session_id
         self._http = http
         self._counters = defaultdict(int)
+        # connections.append(self)
 
     def h3_event_received(self, event: H3Event) -> None:
         if isinstance(event, DatagramReceived):
             payload = str(len(event.data)).encode('ascii')
-            self._http.send_datagram(self._session_id, payload)
+            #self._http.send_datagram(self._session_id, payload)
+            self._handler.datagram_received(payload)
 
         if isinstance(event, WebTransportStreamDataReceived):
             self._counters[event.stream_id] += len(event.data)
@@ -154,6 +157,39 @@ class CounterHandler:
             del self._counters[stream_id]
         except KeyError:
             pass
+
+    def datagram_received(self, data: bytes) -> None:
+        # array = bytearray(data)
+        # result = parse(ddata)
+        # _logger.info("DATAGRAM RECEIVED")
+        #_logger.info("RESULT: %s", result)
+        for connection in connections:
+            if connection != self._session:
+                self._session.send_datagram(connection, data)
+
+    def send_datagram(self, data: bytes) -> None:
+        """
+        Send data using a datagram frame.
+
+        :param data: The data to send.
+        """
+        if not self._protocol._allow_datagrams:
+            _logger.warn(
+                "Sending a datagram while that's now allowed - discarding it")
+            return
+        flow_id = self.session_id
+        if self._http.supports_h3_datagram_04:
+            # The REGISTER_DATAGRAM_NO_CONTEXT capsule was on the session
+            # stream, so we must have the ID of the stream.
+            assert self._protocol._session_stream_id is not None
+            # TODO(yutakahirano): Make sure if this is the correct logic.
+            # Chrome always use 0 for the initial stream and the initial flow
+            # ID, we cannot check the correctness with it.
+            flow_id = self._protocol._session_stream_id // 4
+        # _logger.info("connection stream_id vs standard one: %d", flow_id)
+        # _logger.info("flow id: %s", flow_id)
+        #_logger.info("RESULT 2: %s", result)
+        self._http.send_datagram(flow_id=flow_id, data=data)
 
 
 # WebTransportProtocol handles the beginning of a WebTransport connection: it

@@ -1,5 +1,7 @@
-const WIDTH = 100;
-const HEIGHT = 100;
+console.log = function () { };
+
+const WIDTH = 150;
+const HEIGHT = 150;
 let sentCount = 0;
 let recvCount = 0;
 let sentFramesCount = 0;
@@ -9,9 +11,10 @@ const HEADERSIZE = 16;
 const connections = {};
 var queue = [];
 var frameNumber = 0;
-var prevFrameNumber = 0;
+let prevFrameNumber = 0;
+let forgottenFrames = [];
 let dict = {};
-var prevSequenceNumber = -1;
+let prevSequenceNumber = -1;
 let counter = 0;
 let keys = null;
 let prevValue = null;
@@ -32,7 +35,7 @@ let currentTransport, streamNumber, currentTransportDatagramWriter;
 // "Connect" button handler.
 //   const url = document.getElementById('url').value;
 try {
-    var transport = new WebTransport('https://web-platform.test:59040');
+    var transport = new WebTransport('https://web-platform.test:50828');
     addToEventLog('Initiating connection...');
 } catch (e) {
     addToEventLog('Failed to create connection object. ' + e, 'error');
@@ -46,7 +49,7 @@ try {
     try {
         currentTransportDatagramWriter = transport.datagrams.writable.getWriter();
         addToEventLog('Datagram writer ready.');
-        startMedia(currentTransportDatagramWriter);
+        startMedia();
     } catch (e) {
         addToEventLog('Sending datagrams not supported: ' + e, 'error');
     }
@@ -174,9 +177,6 @@ async function readDatagrams(transport) {
     try {
       
       while (true) {
-
-        //console.log(dict);
-        //console.log(keys);
         var { value, done } = await reader.read();
         if (done) {
           addToEventLog('Done reading datagrams!');
@@ -193,37 +193,26 @@ async function readDatagrams(transport) {
           dict[frameNumber] = []
         }
 
-        // if (frameNumber >= prevFrameNumber) { // problem line? yes, it just stops the previous frame when the first one comes in
-        prevFrameNumber = frameNumber;
-        if (!(value in dict)) {
+        if (!(value in dict) && !(frameNumber in forgottenFrames)) {
           dict[frameNumber].push(value);
         }
-
-        //console.log(frameNumber);
-        //console.log(dict);
-
-        //console.log(dict);
 
         keys = Object.keys(dict);
         keys.sort(function(a, b) {
             return a - b;
         });
 
-        //console.log(keys);
-
         let idx = 0;
         value = dict[keys[idx]].shift();
         if (!value) {
           counter++;
           if (counter == 100) {
+            forgottenFrames.push(prevFrameNumber)
             console.log("backup render");
             render(connections[streamId]);
             delete dict[keys[idx]];
-            //render(connections[streamId]);
             counter = 0;
-            // if (!value) {
-            //   continue;
-            // }
+            prevSequenceNumber = 1;
           }
           continue;
         }
@@ -234,7 +223,7 @@ async function readDatagrams(transport) {
         const eof2 = dv2.getUint32(8);
         const frameNumber2 = dv2.getUint32(12);
 
-        //console.log(value);
+        prevFrameNumber = frameNumber2;
 
         const dataSize = value.length - HEADERSIZE;
 
@@ -242,16 +231,12 @@ async function readDatagrams(transport) {
           document.querySelector('#logs').innerHTML += `User ${streamId2} connected\n`;    // if user's ID is not already present, show as connected
           connections[streamId2] = createRemoteView(streamId2);                                   // create video feed       
         }
-        //const { context, buffer, bufferOffset } = connections[streamId];
 
-        //console.log(frameNumber, prevSequenceNumber, sequenceNumber);
-
-        // if (prevSequenceNumber != (sequenceNumber - 1) && sequenceNumber != 0 && prevSequenceNumber <= sequenceNumber) {
-        //   //console.log(prevSequenceNumber, sequenceNumber, dataSize)
-        //   connections[streamId].bufferOffset = (connections[streamId].bufferOffset + dataSize*(sequenceNumber-prevSequenceNumber));
-        // }
-
-        //console.log(frameNumber, prevSequenceNumber, sequenceNumber, eof);
+        // ****** code that was meant to deal with missed datagrams 
+        if (prevSequenceNumber != (sequenceNumber2 - 1) && sequenceNumber2 != 1) {
+          console.log(frameNumber2, prevSequenceNumber, sequenceNumber2, dataSize)
+          connections[streamId2].bufferOffset = (connections[streamId2].bufferOffset + dataSize*(sequenceNumber2-prevSequenceNumber)-1008);
+        }
 
         prevSequenceNumber = sequenceNumber2;
 
@@ -262,25 +247,16 @@ async function readDatagrams(transport) {
 
         console.log(frameNumber2, sequenceNumber2, connections[streamId2].bufferOffset, dataSize, eof2);     // eof and bufferOffset do not line up?
 
-        //console.log(dict);
-
-        //if (connections[streamId].bufferOffset + dataSize >= FRAMESIZE) {  // if end of video?
-        //if ((eof2 == 1 && connections[streamId2].bufferOffset < FRAMESIZE) || connections[streamId2].bufferOffset >= FRAMESIZE) {
         if (eof2 == 1) {
           (console.log("main render"))
           render(connections[streamId2]);
           delete dict[keys[idx]];
+          prevSequenceNumber = 1;
         }
-
-        
-
 
         recvCount ++;
         showStats();
-        //console.log("test3");
-        //addToEventLog('Datagram received');
       }
-      //}
     } catch (e) {
       addToEventLog('Error while reading datagrams: ' + e, 'error');
     }
@@ -342,10 +318,8 @@ const createRemoteView = (id) => {
 async function render(view){
     recvFramesCount++;
     console.log("----------------- RENDER FRAME -----------------");
-    // console.log("RENDER FRAME");
     view.context.putImageData(new ImageData(view.buffer, WIDTH, HEIGHT), 0, 0);
     view.bufferOffset = 0;
-    //view.buffer = new Uint8ClampedArray(FRAMESIZE);;
 };
   
 function addToEventLog(text, severity = 'info') {
@@ -365,7 +339,7 @@ function addToEventLog(text, severity = 'info') {
     }
 }
 
-async function startMedia(datagramWriter) {
+async function startMedia() {
     const stream = await navigator.mediaDevices.getUserMedia({ video: {width: {exact: WIDTH}, height: {exact: HEIGHT}}, audio: false });
     const video = document.querySelector('#local'); // how does this work? is this the video id defined at the start? yes probably
     video.srcObject = stream;

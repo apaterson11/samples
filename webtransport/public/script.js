@@ -1,7 +1,8 @@
 console.log = function () { };
+addToEventLog = function () { };
 
-const WIDTH = 150;
-const HEIGHT = 150;
+const WIDTH = 100;
+const HEIGHT = 100;
 let sentCount = 0;
 let recvCount = 0;
 let sentFramesCount = 0;
@@ -32,10 +33,8 @@ const showStats = () => {
 
 let currentTransport, streamNumber, currentTransportDatagramWriter;
 
-// "Connect" button handler.
-//   const url = document.getElementById('url').value;
 try {
-    var transport = new WebTransport('https://web-platform.test:50828');
+    var transport = new WebTransport('https://web-platform.test:53021');
     addToEventLog('Initiating connection...');
 } catch (e) {
     addToEventLog('Failed to create connection object. ' + e, 'error');
@@ -68,17 +67,6 @@ transport.closed
     });
 
 
-// document.forms.sending.elements.send.disabled = false;
-// document.getElementById('connect').disabled = true;
-
-function sleep(milliseconds) {
-  const date = Date.now();
-  let currentDate = null;
-  do {
-    currentDate = Date.now();
-  } while (currentDate - date < milliseconds);
-}
-
 // "Send data" button handler.
 async function sendData(canvasContext, video, streamId, sequenceNumber, ts) {
     let encoder = new TextEncoder('utf-8');
@@ -95,7 +83,6 @@ async function sendData(canvasContext, video, streamId, sequenceNumber, ts) {
             ts = Date.now();
             sentFramesCount++;
             const frameNumber = sentFramesCount;
-            // prevSequenceNumber = -1;
             showStats();
             let offset = 0;
 
@@ -111,9 +98,6 @@ async function sendData(canvasContext, video, streamId, sequenceNumber, ts) {
 
                 let writeBuffer = new Uint8ClampedArray(HEADERSIZE + chunk.length);
                 const dv = new DataView(writeBuffer.buffer, 0); // is dataview too slow?
-
-                // writeBuffer.length = (HEADERSIZE + chunk.length);
-                // console.log(writeBuffer.length);
 
                 sequenceNumber++;
 
@@ -178,6 +162,7 @@ async function readDatagrams(transport) {
       
       while (true) {
         var { value, done } = await reader.read();
+        recvCount ++;
         if (done) {
           addToEventLog('Done reading datagrams!');
           return;
@@ -254,7 +239,6 @@ async function readDatagrams(transport) {
           prevSequenceNumber = 1;
         }
 
-        recvCount ++;
         showStats();
       }
     } catch (e) {
@@ -341,12 +325,12 @@ function addToEventLog(text, severity = 'info') {
 
 async function startMedia() {
     const stream = await navigator.mediaDevices.getUserMedia({ video: {width: {exact: WIDTH}, height: {exact: HEIGHT}}, audio: false });
-    const video = document.querySelector('#local'); // how does this work? is this the video id defined at the start? yes probably
+    const video = document.querySelector('#local'); 
     video.srcObject = stream;
     video.muted = true;
-    video.play();   // unsure what this does
+    video.play();
 
-    let streamId = Math.floor(Math.random() * 4294967295);  // should use uuid instead
+    let streamId = Math.floor(Math.random() * 4294967295); 
     var sequenceNumber = 0;
     let ts = Date.now();
 
